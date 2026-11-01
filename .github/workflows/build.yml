@@ -1,0 +1,94 @@
+name: Build Alert Me APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_TOOL_OPTIONS: -Dfile.encoding=UTF-8
+  KS_FILE: keystore/alertme.jks
+  KS_PASS: AlertMe@2026
+  KS_ALIAS: alertme
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Compute version
+        run: |
+          echo "VERSION_CODE=$(( $(date +%s) / 60 ))" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=1.0.${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          npm install --no-audit --no-fund
+          npx cap telemetry off || true
+
+      - name: Create Android project
+        run: |
+          rm -rf android
+          npx cap add android
+
+      - name: Apply Alert Me native code
+        run: node scripts/patch-android.js
+
+      - name: Sync web files
+        run: npx cap sync android
+
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Align and sign APK
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          UNSIGNED=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          test -f "$UNSIGNED"
+          "$BT/zipalign" -p -f 4 "$UNSIGNED" aligned.apk
+          "$BT/apksigner" sign --ks "$KS_FILE" --ks-pass "pass:$KS_PASS" --ks-key-alias "$KS_ALIAS" --key-pass "pass:$KS_PASS" --out "AlertMe-v${VERSION_NAME}.apk" aligned.apk
+          "$BT/apksigner" verify --print-certs "AlertMe-v${VERSION_NAME}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlertMe-APK
+          path: AlertMe-v${{ env.VERSION_NAME }}.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION_NAME }}
+          name: Alert Me v${{ env.VERSION_NAME }}
+          body: |
+            Alert Me v${{ env.VERSION_NAME }}
+            অ্যাপের ভেতরের "আপডেট" অপশন থেকে এই ভার্সন ইনস্টল করা যাবে।
+          files: AlertMe-v${{ env.VERSION_NAME }}.apk
+          make_latest: true
