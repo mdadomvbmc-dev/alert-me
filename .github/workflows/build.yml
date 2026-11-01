@@ -1,5 +1,8 @@
 name: Build Alert Me APK
 
+# Repository-তে শুধু প্রজেক্টের .zip ফাইল (আর এই build.yml) থাকলেই চলবে।
+# নতুন zip upload করলেই নতুন APK বিল্ড হয়ে Releases-এ যাবে।
+
 on:
   push:
     branches: [main, master]
@@ -22,9 +25,40 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: proj
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Extract project from zip
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          mkdir -p proj
+          if [ -f package.json ]; then
+            echo "Using files from repository root"
+            tar --exclude=./proj --exclude=./.git -cf - . | tar -xf - -C proj
+          else
+            ZIP=$(ls -t ./*.zip 2>/dev/null | head -1 || true)
+            if [ -z "$ZIP" ]; then
+              echo "::error::repository-র root-এ কোনো .zip ফাইল পাওয়া যায়নি। প্রজেক্টের zip ফাইলটি upload করুন।"
+              exit 1
+            fi
+            echo "Using $ZIP"
+            mkdir -p unz
+            unzip -q -o "$ZIP" -d unz
+            PJ=$(find unz -maxdepth 3 -name package.json -not -path '*/node_modules/*' -not -path '*/__MACOSX/*' | head -1)
+            if [ -z "$PJ" ]; then
+              echo "::error::zip-এর ভেতরে package.json পাওয়া যায়নি। সঠিক zip ফাইল দিন।"
+              exit 1
+            fi
+            cp -a "$(dirname "$PJ")/." proj/
+          fi
+          test -f proj/package.json
+          test -f proj/scripts/patch-android.js
+          test -f proj/keystore/alertme.jks
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -62,7 +96,7 @@ jobs:
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Build release APK
-        working-directory: android
+        working-directory: proj/android
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
@@ -80,7 +114,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AlertMe-APK
-          path: AlertMe-v${{ env.VERSION_NAME }}.apk
+          path: proj/AlertMe-v${{ env.VERSION_NAME }}.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -90,5 +124,5 @@ jobs:
           body: |
             Alert Me v${{ env.VERSION_NAME }}
             অ্যাপের ভেতরের "আপডেট" অপশন থেকে এই ভার্সন ইনস্টল করা যাবে।
-          files: AlertMe-v${{ env.VERSION_NAME }}.apk
+          files: proj/AlertMe-v${{ env.VERSION_NAME }}.apk
           make_latest: true
